@@ -20,15 +20,16 @@ class Controller(object):
         ki = 0.1
         kd = 0.
         mn = 0. #Minimun Throtthle
-        mx = 0. #Mximun Throtthle
-        self.throttle_controller = PID(kp, ki, kd, mn, mx)
+        mx = 0.2 #Mximun Throtthle
+        self.throttle_controller = PID(kp, ki, kd, mn=mn, mx=mx)
+        #self.throttle_controller = PID(kp, ki, kd, mn, mx)
 
         tau = 0.5 # 1/(2*pi*tau) = cutoff frequency
         ts = 0.2
         self.vel_lpf = LowPassFilter(tau, ts)
 
         # throttle pass filter
-        self.low_pass_filter = LowPassFilter(12.0, 1)
+        #self.low_pass_filter = LowPassFilter(12.0, 1)
 
         self.vehicle_mass=vehicle_mass
         self.fuel_capacity=fuel_capacity
@@ -47,12 +48,12 @@ class Controller(object):
         # Check manual/automatic control with dbw_enabled
         if not dbw_enabled:
             self.throttle_controller.reset()
-            self.low_pass_filter.reset()
-            self.vel_lpf.reset()
+            #self.low_pass_filter.reset()
+            #self.vel_lpf.reset()
             return 0.,0.,0.
         
         #Filter the Input Velocity
-        current_vel = self.vel_lpf.filt(current_vel)
+        #current_vel = self.vel_lpf.filt(current_vel)
 
         steering = self.yaw_controller.get_steering(linear_vel, angular_vel, current_vel)
         brake = 0.

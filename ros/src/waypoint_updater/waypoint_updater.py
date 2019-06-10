@@ -11,16 +11,12 @@ import math
 
 '''
 This node will publish waypoints from the car's current position to some `x` distance ahead.
-
 As mentioned in the doc, you should ideally first implement a version which does not care
 about traffic lights or obstacles.
-
 Once you have created dbw_node, you will update this node to use the status of traffic lights too.
-
 Please note that our simulator also provides the exact location of traffic lights and their
 current status in `/vehicle/traffic_lights` message. You can use this message to build this node
 as well as to verify your TL classifier.
-
 TODO (for Yousuf and Aaron): Stopline location for each traffic light.
 '''
 
@@ -42,7 +38,6 @@ class WaypointUpdater(object):
         self.pose = None
         self.base_waypoints = None
         self.waypoints_2d = None
-        self.waypoint_tree = None
 
         #rospy.spin()
         self.loop()
@@ -60,12 +55,12 @@ class WaypointUpdater(object):
     def pose_cb(self, msg):
         self.pose = msg
 
-    def waypoints_cb(self, waypoints):
-        self.base_waypoints = waypoints
-        if not self.waypoints_2d:
+    def waypoints_cb(self, lane):
+        # do this once and not all the time
+        if self.base_waypoints is None:
+            self.base_waypoints = lane
             self.waypoints_2d = [
-                [Waypoint.pose.pose.position.x, Waypoint.pose.pose.position.y] for Waypoint in waypoints.waypoints]
-            self.waypoint_tree = KDTree(self.waypoints_2d)
+                [Waypoint.pose.pose.position.x, Waypoint.pose.pose.position.y] for Waypoint in lane.waypoints]
 
     def traffic_cb(self, msg):
         # TODO: Callback for /traffic_waypoint message. Implement
@@ -92,11 +87,27 @@ class WaypointUpdater(object):
             dist += dl(waypoints[wp1].pose.pose.position, waypoints[i].pose.pose.position)
             wp1 = i
         return 
+
+    def closest_waypoint(self):
+        # simply take the code from the path planning module and re-implement it here
+        closest_len = 100000
+        closest_waypoint = 0
+        pose = self.pose.pose
         
+        dl = lambda a, b: math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2)
+        for index, waypoint in enumerate(self.base_waypoints.waypoints):
+            dist = dl(pose.position, waypoint.pose.pose.position)
+            if (dist < closest_len):
+                closest_len = dist
+                closest_waypoint = index
+                
+        return closest_waypoint
+    
     def get_closest_waypoint_idx(self):
         x = self.pose.pose.position.x
         y = self.pose.pose.position.y
-        closest_idx = self.waypoint_tree.query([x,1], 1)[1]
+        #closest_idx = self.waypoint_tree.query([x,1], 1)[1]
+        closest_idx = self.closest_waypoint()
 
         # Check if the closest waypoint is ahead or behind of the vehicle
         closest_coord = self.waypoints_2d[closest_idx]
