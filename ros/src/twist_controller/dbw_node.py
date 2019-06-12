@@ -63,7 +63,8 @@ class DBWNode(object):
                                     wheel_base=wheel_base,
                                     steer_ratio=steer_ratio,
                                     max_lat_accel=max_lat_accel,
-                                    max_steer_angle=max_steer_angle)
+                                    max_steer_angle=max_steer_angle, 
+                                    min_speed=0.1)
 
         #Suscribers
         rospy.Subscriber('/current_velocity', TwistStamped, self.velocity_cb)
@@ -108,7 +109,7 @@ class DBWNode(object):
 
     ### Publisher Methods ###
     def publish(self, throttle, brake, steer):
-        if brake == 0. and throttle >= 0.:
+        if brake == 0.0:
             tcmd = ThrottleCmd()
             tcmd.enable = True
             tcmd.pedal_cmd_type = ThrottleCmd.CMD_PERCENT
@@ -120,13 +121,13 @@ class DBWNode(object):
         scmd.steering_wheel_angle_cmd = steer
         self.steer_pub.publish(scmd)
 
-        if brake >= 0. and throttle == 0.:
-            bcmd = BrakeCmd()
-            bcmd.enable = True
-            bcmd.pedal_cmd_type = BrakeCmd.CMD_TORQUE
-            bcmd.pedal_cmd = brake
-            self.brake_pub.publish(bcmd)
-    ### --- ###
+
+        bcmd = BrakeCmd()
+        bcmd.enable = True
+        bcmd.pedal_cmd_type = BrakeCmd.CMD_TORQUE
+        bcmd.pedal_cmd = brake
+        self.brake_pub.publish(bcmd)
+        ### --- ###
 
     ### Suscriber Callbacks ###
     def velocity_cb(self, msg):
