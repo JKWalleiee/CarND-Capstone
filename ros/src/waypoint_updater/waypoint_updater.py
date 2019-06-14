@@ -1,11 +1,14 @@
 #!/usr/bin/env python
 
+import numpy as np
 import rospy
-import math
-import tf
 from geometry_msgs.msg import PoseStamped
 from styx_msgs.msg import Lane, Waypoint
+from scipy.spatial import KDTree
 from std_msgs.msg import Int32
+
+
+import math
 
 '''
 This node will publish waypoints from the car's current position to some `x` distance ahead.
@@ -19,48 +22,63 @@ TODO (for Yousuf and Aaron): Stopline location for each traffic light.
 '''
 
 LOOKAHEAD_WPS = 200 # Number of waypoints we will publish. You can change this number
-DEBUG_MODE = False
-MAX_DECEL = 0.5
-STOP_DIST = 5.0
-TARGET_SPEED_MPH = 10
+# Selected ahead waypoints' indexes to publish (in order to save interpolations' computating time)
+LOOKAHEAD_WPS_MASK = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 16, 20, 28, 36, 52, 68, 100, 132, 196]
+MAX_DECEL = 0.5 # Max deceleration
+STOPPING_WPS_BEFORE = 4 # Number of waypoints to stop before a traffic light line
+#TARGET_SPEED_MPH = 10
 
 class WaypointUpdater(object):
     def __init__(self):
         rospy.init_node('waypoint_updater')
 
-        rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb, queue_size=1)
-        rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb, queue_size=1)
+        rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
+        rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
+        rospy.Subscriber('/traffic_waypoint', Int32, self.traffic_cb)
 
-        # TODO: Add a subscriber for /traffic_waypoint and /obstacle_waypoint below        
-        rospy.Subscriber('/traffic_waypoint', Int32, self.traffic_cb, queue_size=1)
-        rospy.Subscriber('/obstacle_waypoint', Lane, self.obstacle_cb, queue_size=1)
 
         self.final_waypoints_pub = rospy.Publisher('final_waypoints', Lane, queue_size=1)
-        self.cur_pose = None
-        self.waypoints = None  
-        self.red_light_waypoint = None      
-        self.waypoints = None
 
-        rospy.spin()
+        # TODO: Add other member variables you need below
+        self.pose = None
+        self.base_waypoints = None
+        self.waypoints_tree = None
+        self.stop_line_wp_idx = -1
+
+        #rospy.spin()
+        self.loop()
+
+    def loop(self):
+        rate = rospy.Rate(10)
+        while not rospy.is_shutdown():
+            if self.pose and self.base_waypoints and self.waypoints_tree:
+                # Getting the final waypoints
+                final_lane = self.generate_lane()
+                self.publish_waypoints(final_lane)
+            rate.sleep()
+            
+    ### Callback Suscriber ###
 
     def pose_cb(self, msg):
-        self.cur_pose = msg.pose 
-        if self.waypoints is not None:                
-            self.publish()
+        self.pose = msg
 
-    def waypoints_cb(self, lane):
-        # do this once and not all the time
-        if self.waypoints is None:
-            self.waypoints = lane.waypoints            
+    def waypoints_cb(self, waypoints):
+        self.base_waypoints = waypoints
+        self.waypoints_tree = KDTree(
+            [[waypoint.pose.pose.position.x, waypoint.pose.pose.position.y]
+            for waypoint in waypoints.waypoints])
 
     def traffic_cb(self, msg):
-        self.red_light_waypoint = msg.data
-        if self.red_light_waypoint > -1:
-            self.publish()
+        # TODO: Callback for /traffic_waypoint message. Implement
+        self.stop_line_wp_idx = msg.data
 
-    def obstacle_cb(self, msg):
-        # TODO: Callback for /obstacle_waypoint message. We will implement it later
-        pass
+    #def obstacle_cb(self, msg):
+    #    # TODO: Callback for /obstacle_waypoint message. We will implement it later
+    #    pass
+
+    ### --- ###
+
+    ### Helper Functions ###
 
     def get_waypoint_velocity(self, waypoint):
         return waypoint.twist.twist.linear.x
@@ -68,99 +86,103 @@ class WaypointUpdater(object):
     def set_waypoint_velocity(self, waypoints, waypoint, velocity):
         waypoints[waypoint].twist.twist.linear.x = velocity
 
-    def distance(self, waypoints, wp1, wp2):
-        dist = 0
-        dl = lambda a, b: math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2  + (a.z-b.z)**2)
-        for i in range(wp1, wp2+1):
-            dist += dl(waypoints[wp1].pose.pose.position, waypoints[i].pose.pose.position)
-            wp1 = i
-        return dist
-
     def distance(self, p1, p2):
         x, y, z = p1.x - p2.x, p1.y - p2.y, p1.z - p2.z
         return math.sqrt(x*x + y*y + z*z)
+
+    def get_closest_waypoint_idx(self):
+        x = self.pose.pose.position.x
+        y = self.pose.pose.position.y
+        closest_idx = self.waypoints_tree.query([x, y], 1)[1]
+
+        # Checking if closest point is ahead or behind the vehicle
+        closest_waypoint = self.base_waypoints.waypoints[closest_idx]
+        prev_waypoint = self.base_waypoints.waypoints[
+            (closest_idx - 1) if closest_idx > 0 else (len(self.base_waypoints.waypoints) - 1)]
+        closest_coord = [closest_waypoint.pose.pose.position.x, closest_waypoint.pose.pose.position.y]
+        prev_coord = [prev_waypoint.pose.pose.position.x, prev_waypoint.pose.pose.position.y]
+
+        # Equation for hyperplane through closest coords
+        cl_vect = np.array(closest_coord)
+        prev_vect = np.array(prev_coord)
+        pos_vect = np.array([x, y])
+
+        val = np.dot(cl_vect - prev_vect, pos_vect - cl_vect)
+
+        if val > 0:
+            closest_idx = (closest_idx + 1) % len(self.base_waypoints.waypoints)
+        return closest_idx
     
-    def closest_waypoint(self, pose, waypoints):
-        # simply take the code from the path planning module and re-implement it here
-        closest_len = 100000
-        closest_waypoint = 0
-        dl = lambda a, b: math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2)
-        for index, waypoint in enumerate(self.waypoints):
-            dist = dl(pose.position, waypoint.pose.pose.position)
-            if (dist < closest_len):
-                closest_len = dist
-                closest_waypoint = index
-                
-        return closest_waypoint
+    def generate_lane(self):
+        closest_idx = self.get_closest_waypoint_idx()
+        # We want the car to stop at the end of the track, so not doing module
+        farthest_idx = min(closest_idx + LOOKAHEAD_WPS, len(self.base_waypoints.waypoints))
 
-    def next_waypoint(self, pose, waypoints):
-        # same concepts from path planning in here
-        closest_waypoint = self.closest_waypoint(pose, waypoints)
-        map_x = waypoints[closest_waypoint].pose.pose.position.x
-        map_y = waypoints[closest_waypoint].pose.pose.position.y
+        if self.stop_line_wp_idx == -1 or self.stop_line_wp_idx >= farthest_idx or self.stop_line_wp_idx < closest_idx + 1:
+            # If there is no red traffic light ahead, just adding next selected waypoints
+            return self.accelerate_to_target_velocity(closest_idx, farthest_idx)
 
-        heading = math.atan2((map_y - pose.position.y), (map_x - pose.position.x))
-        quaternion = (pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w)
-        _, _, yaw = tf.transformations.euler_from_quaternion(quaternion)
-        angle = abs(yaw - heading)
+        else:
+            # If there is a red traffic light ahead, modifying the waypoints velocity to gradually stop
+            return self.decelerate_to_stop(closest_idx, farthest_idx)
 
-        if angle > (math.pi / 4):        
-            closest_waypoint += 1
-        
-        return closest_waypoint
+    def accelerate_to_target_velocity(self, closest_idx, farthest_idx):
+        final_waypoints = []
 
-    def decelerate(self, waypoints, redlight_index):
+        for i in LOOKAHEAD_WPS_MASK:
+            idx = closest_idx + i
+            if idx < farthest_idx:
+                wp = self.base_waypoints.waypoints[idx]
+                final_waypoints.append(wp)
+        return final_waypoints
+    
+    #def accelerate_to_target_velocity(self, closest_idx, farthest_idx):
+    #    # set the velocity for lookahead waypoints
+    #    lookahead_waypoints = self.waypoints[closest_idx:closest_idx+LOOKAHEAD_WPS]
+    #    for i in range(len(lookahead_waypoints) - 1):                
+    #        # convert 10 miles per hour to meters per sec
+    #        self.set_waypoint_velocity(lookahead_waypoints, i, (TARGET_SPEED_MPH * 1609.34) / (60 * 60))
+    
+    def decelerate_to_stop(self, closest_idx, farthest_idx):
+        final_waypoints = []
+        # Index of the closest waypoint point before the stop line of the traffic light
+        stop_idx = max(self.stop_line_wp_idx - STOPPING_WPS_BEFORE, closest_idx)
+        target_wp = self.base_waypoints.waypoints[stop_idx]
+        dist = 0.0
 
-        if len(waypoints) < 1:
-            return []
-          
-        first = waypoints[0]
-        last = waypoints[redlight_index]
-
-        last.twist.twist.linear.x = 0.
-        total_dist = self.distance(first.pose.pose.position, last.pose.pose.position)
-        start_vel = first.twist.twist.linear.x
-        # start from the waypoint before last and go backwards
-        vel = start_vel
-        for index, wp in enumerate(waypoints):
-
-            if index > redlight_index:
+        for i in LOOKAHEAD_WPS_MASK[::-1]:
+            # For each one of the selected waypoints (starting from the farthest one),
+            # calculating the distance to the stop line and adjust the velocity in order to gradually stop
+            idx = closest_idx + i
+            if idx < farthest_idx:
+                wp = self.base_waypoints.waypoints[idx]
+                p = Waypoint()
+                p.pose = wp.pose
                 vel = 0.0
-            elif vel>0.0:
-                dist = self.distance(wp.pose.pose.position, last.pose.pose.position)
-                dist = max(0, dist - STOP_DIST)
-                vel  = math.sqrt(2 * MAX_DECEL * dist) 
-                if vel < 1.:
-                    vel = 0.
-            else:
-                vel = 0.
-            wp.twist.twist.linear.x = min(vel, wp.twist.twist.linear.x)
 
-        return waypoints
+                if idx < stop_idx:
+                    # Calculating the distance from the stop line to the current waypoint
+                    dist += self.distance(target_wp.pose.pose.position, wp.pose.pose.position)
+                    
+                    # Reducing the velocity according to the max acceleration
+                    vel = math.sqrt(2 * MAX_DECEL * dist)
+                    if vel < 1.0:
+                        vel = 0.0
 
-    def publish(self):
-        
-        if self.cur_pose is not None:
-            next_waypoint_index = self.next_waypoint(self.cur_pose, self.waypoints)
-            lookahead_waypoints = self.waypoints[next_waypoint_index:next_waypoint_index+LOOKAHEAD_WPS]
+                p.twist.twist.linear.x = min(vel, wp.twist.twist.linear.x)
+                final_waypoints.insert(0, p)
 
-            if self.red_light_waypoint is None or self.red_light_waypoint < 0 or self.red_light_waypoint >= next_waypoint_index+LOOKAHEAD_WPS:
-            
-                # set the velocity for lookahead waypoints
-                for i in range(len(lookahead_waypoints) - 1):                
-                    # convert 10 miles per hour to meters per sec
-                    self.set_waypoint_velocity(lookahead_waypoints, i, (TARGET_SPEED_MPH * 1609.34) / (60 * 60))
+        return final_waypoints
+    
+    ### --- ###
 
-            else:                
-                redlight_lookahead_index = max(0, self.red_light_waypoint - next_waypoint_index)
-                lookahead_waypoints = self.decelerate(lookahead_waypoints, redlight_lookahead_index)
+    ### Publisher methods ###
+    def publish_waypoints(self, final_waypoints):
+        lane = Lane()
+        lane.header = self.base_waypoints.header
+        lane.waypoints = final_waypoints
+        self.final_waypoints_pub.publish(lane)
 
-            lane = Lane()
-            lane.header.frame_id = '/world'
-            lane.header.stamp = rospy.Time(0)
-            lane.waypoints = lookahead_waypoints
-            
-            self.final_waypoints_pub.publish(lane)
 
 if __name__ == '__main__':
     try:
