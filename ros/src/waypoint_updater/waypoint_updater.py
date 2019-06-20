@@ -162,7 +162,7 @@ class WaypointUpdater(object):
 
                 if idx < stop_idx:
                     # Calculating the distance from the stop line to the current waypoint
-                    dist += self.distance(target_wp.pose.pose.position, wp.pose.pose.position)
+                    dist = self.distance(target_wp.pose.pose.position, wp.pose.pose.position)
                     
                     # Reducing the velocity according to the max acceleration
                     vel = math.sqrt(2 * MAX_DECEL * dist)

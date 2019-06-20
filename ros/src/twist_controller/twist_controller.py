@@ -50,7 +50,7 @@ class Controller(object):
         next_steer = self.s_lpf.filt(next_steer)
 
         acceleration = self.pid.step(vel_err, del_time)
-        #acceleration = self.t_lpf.filt(acceleration)
+        acceleration = self.t_lpf.filt(acceleration)
 
         if acceleration > 0.009:
             throttle = acceleration
